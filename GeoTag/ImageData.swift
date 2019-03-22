@@ -3,66 +3,139 @@
 //  GeoTag
 //
 //  Created by Marco S Hyman on 6/26/14.
-//  Copyright (c) 2014, 2015 Marco S Hyman, CC-BY-NC
+//  Copyright 2014-2019 Marco S Hyman
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy of
+// this software and associated documentation files (the "Software"), to deal in the
+// Software without restriction, including without limitation the rights to use,
+// copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the
+// Software, and to permit persons to whom the Software is furnished to do so,
+// subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+// FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+// COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+// AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+// WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 //
 
 import Foundation
 import AppKit
+import MapKit
 
-// CFString to (NS)*String casts
-let pixelHeight = kCGImagePropertyPixelHeight as NSString
-let pixelWidth = kCGImagePropertyPixelWidth as NSString
-let createThumbnailWithTransform = kCGImageSourceCreateThumbnailWithTransform as String
-let createThumbnailFromImageAlways = kCGImageSourceCreateThumbnailFromImageAlways as String
-let createThumbnailFromImageIfAbsent = kCGImageSourceCreateThumbnailFromImageIfAbsent as String
-let thumbnailMaxPixelSize = kCGImageSourceThumbnailMaxPixelSize as String
-let exifDictionary = kCGImagePropertyExifDictionary as NSString
-let exifDateTimeOriginal = kCGImagePropertyExifDateTimeOriginal as String
-let GPSDictionary = kCGImagePropertyGPSDictionary as NSString
-let GPSLatitude = kCGImagePropertyGPSLatitude as String
-let GPSLatitudeRef = kCGImagePropertyGPSLatitudeRef as String
-let GPSLongitude = kCGImagePropertyGPSLongitude as String
-let GPSLongitudeRef = kCGImagePropertyGPSLongitudeRef as String
+/// A shorter name for a type I'll often use
+typealias Coord = CLLocationCoordinate2D
 
 final class ImageData: NSObject {
-    /*
-     * if we can't trash the file display a warning that files will be
-     * copied to an alternate directory.  This flag is used so the
-     * warning is only displayed once per execution of the program.
-     */
-    static var firstWarning = true
+    // CFString to (NS)*String casts
+    let pixelHeight = kCGImagePropertyPixelHeight as NSString
+    let pixelWidth = kCGImagePropertyPixelWidth as NSString
+    let createThumbnailWithTransform = kCGImageSourceCreateThumbnailWithTransform as String
+    let createThumbnailFromImageAlways = kCGImageSourceCreateThumbnailFromImageAlways as String
+    let createThumbnailFromImageIfAbsent = kCGImageSourceCreateThumbnailFromImageIfAbsent as String
+    let thumbnailMaxPixelSize = kCGImageSourceThumbnailMaxPixelSize as String
+    let exifDictionary = kCGImagePropertyExifDictionary as NSString
+    let exifDateTimeOriginal = kCGImagePropertyExifDateTimeOriginal as String
+    let GPSDictionary = kCGImagePropertyGPSDictionary as NSString
+    let GPSStatus = kCGImagePropertyGPSStatus as String
+    let GPSLatitude = kCGImagePropertyGPSLatitude as String
+    let GPSLatitudeRef = kCGImagePropertyGPSLatitudeRef as String
+    let GPSLongitude = kCGImagePropertyGPSLongitude as String
+    let GPSLongitudeRef = kCGImagePropertyGPSLongitudeRef as String
 
-    // MARK: instance variables
+    // MARK: instance variables -- file URLs
 
     let url: URL                // URL of the image
     var name: String? {
         return url.lastPathComponent
     }
-    let sandboxUrl: URL         // URL of the sandbox copy of the image
+    var sandboxUrl: URL         // URL of the sandbox copy of the image
 
-    var date: String = ""
+    // MARK: instance variables -- date/time related values
+
+    // format of the date string used by exiftool
+    let dateFormatter = DateFormatter()
+    let dateFormatString = "yyyy:MM:dd HH:mm:ss"
+
+    // image date/time created
+    var dateTime: String = ""
+    var originalDateTime: String = ""
+
+    // timeZone of image
+    var timeZone: TimeZone?
+
+    // image date/time as a Date.
+    // When this value is set the date string variable is also updated
+    // do not use timezone info
+    var dateValue: Date? {
+        get {
+            dateFormatter.dateFormat = dateFormatString
+            dateFormatter.timeZone = nil
+            return dateFormatter.date(from: dateTime)
+        }
+        set {
+            if let value = newValue {
+                dateFormatter.dateFormat = dateFormatString
+                dateFormatter.timeZone = nil
+                dateTime = dateFormatter.string(from: value)
+            } else {
+                dateTime = ""
+            }
+        }
+    }
+    var dateValueWithZone: Date? {
+        dateFormatter.dateFormat = dateFormatString
+        dateFormatter.timeZone = timeZone
+        return dateFormatter.date(from: dateTime)
+    }
+
+    // dateTime as a TimeInterval
     var dateFromEpoch: TimeInterval {
-        let format = DateFormatter()
-        format.dateFormat = "yyyy:MM:dd HH:mm:ss"
-        format.timeZone = TimeZone.current
-        if let convertedDate = format.date(from: date) {
+        if let convertedDate = dateValue {
             return convertedDate.timeIntervalSince1970
         }
         return 0
     }
 
-    var latitude: Double?, originalLatitude: Double?
-    var longitude: Double?, originalLongitude: Double?
-    var validImage = false
+    // MARK: instance variables -- image location
+
+    // image location
+    var location: Coord? {
+        didSet {
+            // update the timezone to match image location
+            if let location = location {
+                let coder = CLGeocoder();
+                let loc = CLLocation(latitude: location.latitude,
+                                     longitude: location.longitude)
+                coder.reverseGeocodeLocation(loc) {
+                    (placemarks, error) in
+                    let place = placemarks?.last
+                    self.timeZone = place?.timeZone
+                }
+            } else {
+                timeZone = nil
+            }
+        }
+    }
+    var originalLocation: Coord?
+
+    // MARK: instance variables -- image state and thumbnail
+
+    var validImage = false  // does URL point to a valid image file?
     lazy var image: NSImage = self.loadImage()
 
-    // return the string representation of the location of an image for copy
-    // and paste.
+    /// The string representation of the location of an image for copy and paste.
+    /// The representation of no location is an empty string.
     var stringRepresentation: String {
-        if latitude != nil && longitude != nil {
-            return "\(latitude!) \(longitude!)"
+        if let location = location {
+            return "\(location.latitude) \(location.longitude)"
+        } else {
+            return ""
         }
-        return ""
     }
 
     // MARK: Init
@@ -83,6 +156,19 @@ final class ImageData: NSObject {
                                              appropriateFor: nil,
                                              create: true)
             sandboxUrl = docDir.appendingPathComponent(url.lastPathComponent)
+            // if sandboxUrl already exists modify the name until it doesn't
+            var fileNumber = 1
+            while fileManager.fileExists(atPath: (sandboxUrl.path)) {
+                var newName = url.lastPathComponent
+                let nameDot = newName.index(of: ".") ?? newName.endIndex
+                newName.insert(contentsOf: "-\(fileNumber)", at: nameDot)
+                fileNumber += 1
+                sandboxUrl = docDir.appendingPathComponent(newName)
+            }
+            // fileExistsAtPath will return false when a symbolic link
+            // exists but does not point to a valid file.  Handle that
+            // situation to avoid a crash by deleting any stale link
+            // that may be present before trying to create a new link.
             try? fileManager.removeItem(at: sandboxUrl)
             try fileManager.createSymbolicLink(at: sandboxUrl,
                                                withDestinationURL: url)
@@ -91,115 +177,82 @@ final class ImageData: NSObject {
         }
         super.init()
         validImage = loadImageData()
-        originalLatitude = latitude
-        originalLongitude = longitude
+        originalLocation = location
+        originalDateTime = dateTime
     }
 
-    // MARK: set/revert latitude and longitude for an image
-
-    /// set the latitude and longitude of an image
-    /// - Parameter latitude: the new latitude
-    /// - Parameter longitude: the new longitude
-    ///
-    /// The location may be set to nil to delete location information from
-    /// an image.
-    func setLocation(latitude: Double?, longitude: Double?) {
-        self.latitude = latitude
-        self.longitude = longitude
+    /// remove the symbolic link created in the sandboxed document directory
+    /// during instance initialization
+    deinit
+    {
+        let fileManager = FileManager.default
+        try? fileManager.removeItem(at: sandboxUrl)
     }
 
-    /// restore latitude and longitude to their initial values
+    // MARK: revert changes for an image
+
+    /// restore latitude, longitude, and date/time to their initial values
     ///
-    /// Image location is restored to the value when location information
+    /// Image location and time is restored to the value when location information
     /// was last saved. If the image has not been saved the restored values
     /// will be those in the image when first read.
-    func revertLocation() {
-        latitude = originalLatitude
-        longitude = originalLongitude
+    func revert() {
+        location = originalLocation
+        dateTime = originalDateTime
     }
 
-    // MARK: Backup and Save
+    // MARK: Backup and Save (does not run on main thread)
 
-    /// link or copy a file into a save directory if specified
+    /// copy the image into the backup folder
     ///
-    /// Link the named file into an optional save directory.  If the link fails
-    /// (different filesystem?) copy the file instead.  If a file with the
-    /// same name exists in the save directory it is **not** overwritten.
-    ///
-    /// Note: paths are used instead of URLs because linkItemAtURL fails
-    /// trying to link foo.jpg_original to somedir/foo.jpg.
-    private func saveOriginalFile() -> Bool {
+    /// If an image file with the same name exists in the backup folder append
+    /// an available number to the image name to make the name unique to the
+    /// folder.sz
+    private
+    func saveOriginalFile() -> Bool {
         guard let saveDirUrl = Preferences.saveFolder() else { return false }
         guard let name = name else { return false }
+        var fileNumber = 1
+        var saveFileUrl = saveDirUrl.appendingPathComponent(name, isDirectory: false)
         let fileManager = FileManager.default
-        let saveFileUrl = saveDirUrl.appendingPathComponent(name, isDirectory: false)
         let _ = saveDirUrl.startAccessingSecurityScopedResource()
-        if !fileManager.fileExists(atPath: (saveFileUrl.path)) {
-            do {
-                try fileManager.linkItem(atPath: url.path, toPath: saveFileUrl.path)
-            } catch {
-                // couldn't create hard link, copy file instead
-                do {
-                    try fileManager.copyItem(at: url, to: saveFileUrl)
-                } catch let error as NSError {
-                    saveDirUrl.stopAccessingSecurityScopedResource()
-                    unexpected(error: error,
-                               "Cannot copy \(url.path) to \(saveFileUrl.path)\n\nReason: ")
-                    return false
-                }
-            }
+        defer { saveDirUrl.stopAccessingSecurityScopedResource() }
+        // add a suffix to the name until no file is found at the save location
+        while fileManager.fileExists(atPath: (saveFileUrl.path)) {
+            var newName = name
+            let nameDot = newName.index(of: ".") ?? newName.endIndex
+            newName.insert(contentsOf: "-\(fileNumber)", at: nameDot)
+            fileNumber += 1
+            saveFileUrl = saveDirUrl.appendingPathComponent(newName, isDirectory: false)
         }
-        saveDirUrl.stopAccessingSecurityScopedResource()
+        // Copy the image file to the backup folder
+        do {
+            try fileManager.copyItem(at: url, to: saveFileUrl)
+            /// DANGER WILL ROBINSON -- the above call can fail to return an
+            /// error when the file is not copied.  radar filed and closed
+            /// as a DUPLICATE OF 30350792 which was still open as of macOS
+            /// 10.12.x.  As a result I must verify that the copied file exists
+            if !fileManager.fileExists(atPath: (saveFileUrl.path)) {
+                // UI interaction must run on the main thread
+                DispatchQueue.main.async {
+                    unexpected(error: nil,
+                               "Cannot copy \(self.url.path) to \(saveFileUrl.path)")
+                }
+                return false
+            }
+        } catch let error as NSError {
+            // UI interaction must run on the main thread
+            DispatchQueue.main.async {
+                unexpected(error: error,
+                           "Cannot copy \(self.url.path) to \(saveFileUrl.path)\n\nReason: ")
+            }
+            return false
+        }
         return true
     }
 
-    /// backup the image file by either linking/copying it to a save directory
-    /// or placing a copy in the trash.
-    ///
-    /// - Returns: true if the backup was succcesful
-    private func backupImageFile() -> Bool {
-        if saveOriginalFile() {
-            return true
-        }
-
-        // no backup directory specified or a copy to that directory failed
-        // try to trash the file
-
-        var backupURL: NSURL?
-        let fileManager = FileManager.default
-        do {
-            try fileManager.trashItem(at: url, resultingItemURL: &backupURL)
-            do {
-                try fileManager.copyItem(at: backupURL! as URL, to: url)
-                return true
-            } catch let error as NSError {
-                unexpected(error: error,
-                           "Cannot copy \(String(describing: backupURL)) to \(url) for update.\n\nReason: ")
-            }
-        } catch let error as NSError {
-            // couldn't trash file, warn user of alternate backup location
-            if ImageData.firstWarning {
-                ImageData.firstWarning = false
-                let alert = NSAlert()
-                alert.addButton(withTitle: NSLocalizedString("CLOSE", comment: "Close"))
-                alert.messageText = NSLocalizedString("NO_TRASH_TITLE",
-                                                      comment: "can't trash file")
-                alert.informativeText = url.path
-                alert.informativeText += NSLocalizedString("NO_TRASH_DESC",
-                                                           comment: "can't trash file")
-                if let reason = error.localizedFailureReason {
-                    alert.informativeText += reason
-                } else {
-                    alert.informativeText += NSLocalizedString("NO_TRASH_REASON",
-                                                               comment: "unknown error reason")
-                }
-                alert.runModal()
-            }
-        }
-        return false
-    }
-
-    /// save image file if location has changed
+    /// save image file if location or timestamp has changed
+    /// - Returns: false if a changed location could not be saved
     ///
     /// Invokes exiftool to update image metadata with the current
     /// latitude and longitude.  Non valid images and images that have not
@@ -212,25 +265,28 @@ final class ImageData: NSObject {
     /// sandbox.  This is needed as exiftool creates temporary files.
     /// The updated file is copied back to its original location after
     /// exiftool does its job.
-    func saveImageFile() {
-        if validImage &&
-           (latitude != originalLatitude || longitude != originalLongitude) &&
-           backupImageFile() {
-            if Exiftool.helper.updateLocation(from: self) == 0 {
-                let fileManager = FileManager.default
-                do {
-                    try fileManager.removeItem(at: url)
-                    try fileManager.moveItem(at: sandboxUrl, to: url)
-                    originalLatitude = latitude
-                    originalLongitude = longitude
-                } catch let error as NSError {
-                    unexpected(error: error,
-                               "Cannot update \(url.path)\n\nReason: ")
-                }
-            }
+    /// - Returns:  0 if nothing to save or file saved
+    ///             -1 if the file could not be backed up
+    ///             non-zero exifcode return value
+    func saveImageFile() -> Int32 {
+        guard validImage &&
+              (location?.latitude != originalLocation?.latitude ||
+               location?.longitude != originalLocation?.longitude ||
+               dateTime != originalDateTime) else {
+            return 0     // nothing to update
         }
-    }
+        if saveOriginalFile() {
+            let result = Exiftool.helper.updateLocation(from: self)
+            if result == 0 {
+                originalLocation = location
+                originalDateTime = dateTime
+            }
+            return result
+        }
 
+        // failed to backup or update
+        return -1
+    }
 
     // MARK: extract image metadata and build thumbnail preview
 
@@ -239,59 +295,54 @@ final class ImageData: NSObject {
     ///
     /// If image propertied can not be accessed or if needed properties
     /// do not exist the file is assumed to be a non-image file
-    private func loadImageData() -> Bool {
+    private
+    func loadImageData() -> Bool {
         guard let imgRef = CGImageSourceCreateWithURL(url as CFURL, nil) else {
-            print("Failed CGImageSourceCreateWithURL \(url)")
+            unexpected(error: nil, "CGImageSourceCreateWithURL for \(url) failed")
             return false
         }
 
         // grab the image properties and extract height and width
         // if there are no image properties there is nothing to do.
-        guard let imgProps = CGImageSourceCopyPropertiesAtIndex(imgRef, 0, nil) as NSDictionary! else {
+        guard let imgProps = CGImageSourceCopyPropertiesAtIndex(imgRef, 0, nil) as NSDictionary? else {
             return false
         }
 
         // extract image date/time created
         if let exifData = imgProps[exifDictionary] as? [String: AnyObject],
            let dto = exifData[exifDateTimeOriginal] as? String {
-            date = dto
+            dateTime = dto
         }
 
         // extract image existing gps info
         if let gpsData = imgProps[GPSDictionary] as? [String: AnyObject] {
+            // some Leica write GPS tags with a status tag of "V" (void) when no
+            // GPS info is available.   If a status tag exists and its value
+            // is "V" ignore the GPS data.
+            if let status = gpsData[GPSStatus] as? String {
+                if status == "V" {
+                    return true
+                }
+            }
             if let lat = gpsData[GPSLatitude] as? Double,
-               let latRef = gpsData[GPSLatitudeRef] as? String {
-                if latRef == "N" {
-                    latitude = lat
-                } else {
-                    latitude = -lat
-                }
-            }
-            if let lon = gpsData[GPSLongitude] as? Double,
+               let latRef = gpsData[GPSLatitudeRef] as? String,
+               let lon = gpsData[GPSLongitude] as? Double,
                let lonRef = gpsData[GPSLongitudeRef] as? String {
-                if lonRef == "E" {
-                    longitude = lon
-                } else {
-                    longitude = -lon
-                }
-            }
-            // At least one version of leica firmware uses a latitude and
-            // longitude of 0 for no gps info
-            if latitude == 0.0 && longitude == 0.0 {
-                latitude = nil
-                longitude = nil
+                location = Coord(latitude: latRef == "N" ? lat : -lat,
+                                longitude: lonRef == "E" ? lon : -lon)
             }
         }
         return true
     }
 
     /// Load an image thumbnail
-    /// - Returns: NSImage of the thumbnail if sucessful
+    /// - Returns: NSImage of the thumbnail
     ///
     /// If image propertied can not be accessed or if needed properties
-    /// do not exist the file is assumed to be a non-image file and a preview
-    /// is not created.
-    private func loadImage() -> NSImage {
+    /// do not exist the file is assumed to be a non-image file and a zero
+    /// sized empty image is returned.
+    private
+    func loadImage() -> NSImage {
         var image = NSImage(size: NSMakeRect(0, 0, 0, 0).size)
         guard let imgRef = CGImageSourceCreateWithURL(url as CFURL, nil) else {
             return image
@@ -322,7 +373,7 @@ final class ImageData: NSObject {
                 let imgRect = NSMakeRect(0.0, 0.0, imgWidth, imgHeight)
                 image = NSImage(size: imgRect.size)
                 image.lockFocus()
-                if let currentContext = NSGraphicsContext.current() {
+                if let currentContext = NSGraphicsContext.current {
                     let context = currentContext.cgContext
                     context.draw(imgPreview, in: imgRect)
                 }
@@ -333,3 +384,20 @@ final class ImageData: NSObject {
         return image
     }
 }
+
+/// Key-value names for tableview column sorting
+extension ImageData {
+    @objc var imageName: String {
+        return name ?? ""
+    }
+    @objc var dateTimeSort: Double {
+        return dateFromEpoch
+    }
+    @objc var latitude: Double {
+        return location?.latitude ?? 0
+    }
+    @objc var longitude: Double {
+        return location?.longitude ?? 0
+    }
+}
+

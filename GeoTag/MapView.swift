@@ -3,7 +3,24 @@
 //  GeoTag
 //
 //  Created by Marco S Hyman on 7/19/14.
-//  Copyright (c) 2014, 2016 Marco S Hyman, CC-BY-NC
+//  Copyright 2014-2018 Marco S Hyman
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy of
+// this software and associated documentation files (the "Software"), to deal in the
+// Software without restriction, including without limitation the rights to use,
+// copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the
+// Software, and to permit persons to whom the Software is furnished to do so,
+// subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+// FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+// COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+// AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+// WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 //
 
 import Foundation
@@ -16,18 +33,48 @@ import MapKit
 
 class MapView: MKMapView {
     var clickDelegate: MapViewDelegate?
+    var clickTimer: Timer?
+    var dragInProgress = false
 
-    override func mouseUp(with theEvent: NSEvent) {
+    // start a timer to mark the location on the first click.  Cancel the
+    // timer on double clicks.
+    override
+    func mouseUp(with theEvent: NSEvent) {
         super.mouseUp(with: theEvent)
-        if theEvent.clickCount == 1 {
+        if theEvent.clickCount == 1 && !dragInProgress {
+            // start a timer for this location.  The location will be marked
+            // when the timer fires unless this is a double click
             let point = convert(theEvent.locationInWindow, from: nil)
-            let location = convert(point, toCoordinateFrom: self)
-            clickDelegate?.mouseClicked(mapView: self, location: location)
+            let coords = convert(point, toCoordinateFrom: self)
+            clickTimer = Timer.scheduledTimer(timeInterval: NSEvent.doubleClickInterval,
+                                              target: self,
+                                              selector: #selector(self.clicked),
+                                              userInfo: coords, repeats: false)
+        } else {
+            dragInProgress = false
+            clickTimer?.invalidate()
+            clickTimer = nil
         }
+    }
+
+    override
+    func mouseDragged(with theEvent: NSEvent) {
+        dragInProgress = true
+    }
+
+    // Mark the saved location when the click timer expires
+    @objc
+    func clicked(timer: Timer) {
+        let coords = timer.userInfo as! CLLocationCoordinate2D
+        clickTimer?.invalidate()
+        clickTimer = nil
+        clickDelegate?.mouseClicked(mapView: self, location: coords)
     }
 }
 
 /// The delegate receiving the mouse clicks must follow this protocol
+
 protocol MapViewDelegate: NSObjectProtocol {
-    func mouseClicked(mapView: MapView!, location: CLLocationCoordinate2D)
+    func mouseClicked(mapView: MapView!,
+                      location: CLLocationCoordinate2D)
 }
